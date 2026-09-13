@@ -1,0 +1,42 @@
+[project]
+name = "gmail-mcp"
+version = "0.1.0"
+description = "MCP server for the Gmail API — read, search, draft, and send, gated behind a three-tier access level."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Jan Ivan Simoy" }]
+keywords = ["gmail", "mcp", "model-context-protocol", "email", "oauth"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Communications :: Email",
+]
+dependencies = [
+    "mcp>=2.0",
+    "httpx>=0.27",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "respx>=0.21"]
+
+[project.scripts]
+gmail-mcp = "gmail_mcp.server:main"
+gmail-mcp-authorize = "gmail_mcp.authorize:main"
+
+[project.urls]
+Homepage = "https://github.com/jimsimoy/gmail-mcp"
+Issues = "https://github.com/jimsimoy/gmail-mcp/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gmail_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
