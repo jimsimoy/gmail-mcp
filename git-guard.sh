@@ -37,7 +37,7 @@ GUARD_GENERIC=(
 )
 
 # Lines that legitimately contain a trigger word. Keep this list short and specific.
-GUARD_ALLOW='example\.(com|local|org)|your-site|mysite\.local|user@example|placeholder|<[A-Z_]+>|@param|@return|git@github\.com:jimsimoy/|noreply@anthropic\.com|mail\.gmail\.com|127\.0\.0\.1|fake-[a-z-]+|os\.environ\.get\("GMAIL_[A-Z_]+"\)'
+GUARD_ALLOW='example\.(com|local|org)|your-site|mysite\.local|user@example|placeholder|<[A-Z_]+>|@param|@return|git@github\.com:jimsimoy/|noreply@anthropic\.com|mail\.gmail\.com|127\.0\.0\.1|fake-[a-z-]+|os\.environ\.get\("GMAIL_[A-Z_]+"\)|@pytest\.|@mcp\.'
 
 guard_scan() {
   local subject="$1" content="$2" found=0 pat line

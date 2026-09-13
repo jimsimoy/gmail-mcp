@@ -5,10 +5,22 @@ so a write attempted above the configured GMAIL_ACCESS_LEVEL raises
 :class:`~gmail_mcp.access.AccessDenied` *before* any HTTP request is made —
 this is the dispatch-time half of the two-gate enforcement described in
 access.py (the other half is which tools server.py registers at all).
+
+Rate limits: Gmail enforces a per-minute "Total Query Cost" quota per user,
+and fetching N search results costs one `messages.get` call each on top of
+the `messages.list` call itself — a search with a generous `max_results` can
+trip it in a single burst (observed directly: 78 back-to-back message fetches
+across two searches hit `RATE_LIMIT_EXCEEDED` on a freshly-created project).
+`_request` backs off and retries on a detected rate-limit response, and
+`search_messages`/`list_drafts` pace their per-item fetches — see
+AGENTS.md §5 for the policy this implements and what a calling agent should
+still do on top of it (state the request count, don't loop past a stop-and-
+report failure that survives the retries here).
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import re
 from email.mime.text import MIMEText
@@ -22,6 +34,22 @@ from .auth import TokenProvider
 from .config import Settings
 
 _BASE_URL = "https://gmail.googleapis.com/gmail/v1/users/me"
+
+#: Retry policy for a detected rate-limit response — not for any other error.
+_MAX_RATE_LIMIT_RETRIES = 3
+_RATE_LIMIT_BASE_DELAY_SECONDS = 5.0
+
+#: Gap between each per-item fetch in a fan-out loop (search_messages,
+#: list_drafts), so a large max_results doesn't burst the whole batch at once.
+_PER_ITEM_DELAY_SECONDS = 0.3
+
+
+def _is_rate_limit_response(status_code: int, body: str) -> bool:
+    if status_code == 429:
+        return True
+    return status_code == 403 and (
+        "rateLimitExceeded" in body or "RATE_LIMIT_EXCEEDED" in body
+    )
 
 
 class GmailError(RuntimeError):
@@ -156,17 +184,46 @@ class GmailClient:
         await self._tokens.aclose()
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        token = await self._tokens.get_token()
-        headers = kwargs.pop("headers", {})
-        headers["Authorization"] = f"Bearer {token}"
-        response = await self._http.request(method, f"{_BASE_URL}{path}", headers=headers, **kwargs)
-        if response.status_code >= 400:
-            raise GmailError(
-                self._settings.redact(f"Gmail API error {response.status_code}: {response.text}")
+        static_kwargs = {k: v for k, v in kwargs.items() if k != "headers"}
+        for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
+            token = await self._tokens.get_token()
+            headers = dict(kwargs.get("headers") or {})
+            headers["Authorization"] = f"Bearer {token}"
+            response = await self._http.request(
+                method, f"{_BASE_URL}{path}", headers=headers, **static_kwargs
             )
-        if response.status_code == 204 or not response.content:
-            return {}
-        return response.json()
+            if response.status_code >= 400:
+                body = response.text
+                if (
+                    _is_rate_limit_response(response.status_code, body)
+                    and attempt < _MAX_RATE_LIMIT_RETRIES
+                ):
+                    await asyncio.sleep(_RATE_LIMIT_BASE_DELAY_SECONDS * (2**attempt))
+                    continue
+                raise GmailError(
+                    self._settings.redact(f"Gmail API error {response.status_code}: {body}")
+                )
+            if response.status_code == 204 or not response.content:
+                return {}
+            return response.json()
+        raise AssertionError("unreachable")  # loop always returns or raises above
+
+    async def _fetch_each_paced(self, refs: Sequence[Mapping[str, Any]], fetch_one) -> list[Any]:
+        """Fetch one item per ref via `fetch_one(ref)`, with a gap between calls.
+
+        `search_messages`/`list_drafts` fan out into one full-item GET per
+        search result — with no gap, a generous `max_results` bursts dozens of
+        calls at once and can trip Gmail's per-minute quota on its own (this
+        happened in practice: see the module docstring). `_request`'s own
+        retry-on-rate-limit is the safety net; this loop is what avoids
+        needing it in the first place.
+        """
+        results = []
+        for i, ref in enumerate(refs):
+            results.append(await fetch_one(ref))
+            if i < len(refs) - 1:
+                await asyncio.sleep(_PER_ITEM_DELAY_SECONDS)
+        return results
 
     # ── Profile & labels (READONLY) ──────────────────────────────────────────
 
@@ -195,10 +252,10 @@ class GmailClient:
             params["labelIds"] = list(label_ids)
         data = await self._request("GET", "/messages", params=params)
         refs = data.get("messages", [])
-        messages = []
-        for ref in refs:
-            full = await self._request("GET", f"/messages/{ref['id']}", params={"format": "full"})
-            messages.append(summarize_message(full))
+        full_messages = await self._fetch_each_paced(
+            refs, lambda ref: self._request("GET", f"/messages/{ref['id']}", params={"format": "full"})
+        )
+        messages = [summarize_message(m) for m in full_messages]
         return {
             "messages": messages,
             "next_page_token": data.get("nextPageToken"),
@@ -224,10 +281,11 @@ class GmailClient:
         if page_token:
             params["pageToken"] = page_token
         data = await self._request("GET", "/drafts", params=params)
-        drafts = []
-        for ref in data.get("drafts", []):
-            full = await self._request("GET", f"/drafts/{ref['id']}", params={"format": "full"})
-            drafts.append(self._summarize_draft(full))
+        full_drafts = await self._fetch_each_paced(
+            data.get("drafts", []),
+            lambda ref: self._request("GET", f"/drafts/{ref['id']}", params={"format": "full"}),
+        )
+        drafts = [self._summarize_draft(d) for d in full_drafts]
         return {"drafts": drafts, "next_page_token": data.get("nextPageToken")}
 
     async def get_draft(self, draft_id: str) -> dict[str, Any]:

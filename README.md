@@ -310,7 +310,8 @@ gmail-mcp/
 │   └── server.py              # MCP tool definitions and tiered registration
 ├── tests/
 │   ├── test_access.py                # Both enforcement gates
-│   └── test_message_parsing.py       # MIME/text-extraction pure-function tests
+│   ├── test_message_parsing.py       # MIME/text-extraction pure-function tests
+│   └── test_rate_limiting.py         # Retry-on-rate-limit and per-item fetch pacing
 ├── .env.example
 └── pyproject.toml
 ```
@@ -324,8 +325,10 @@ gmail-mcp/
 ./.venv/bin/python -m pytest -q
 ```
 
-Tests run entirely offline against `httpx.MockTransport` and a fake token provider — no real Gmail
-account or network access is needed to verify the access-level gates or the MIME/parsing logic.
+51 tests, run entirely offline against `httpx.MockTransport` and a fake token provider — no real
+Gmail account or network access is needed to verify the access-level gates, the MIME/parsing logic,
+or the rate-limit backoff and pacing (see [AGENTS.md](AGENTS.md#5-rate-limits-and-pacing) — this was
+hit for real once, not added speculatively).
 
 ---
 
